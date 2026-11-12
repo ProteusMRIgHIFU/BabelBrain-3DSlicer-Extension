@@ -172,6 +172,13 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.opacitySlider.setToolTip(_("Opacity of the result map over the T1w volume."))
         rform.addRow(_("Opacity:"), self.opacitySlider)
 
+        self.thresholdSlider = ctk.ctkRangeWidget()
+        self.thresholdSlider.setToolTip(_("Values of the selected result map below the low limit or above "
+                                          "the high limit are not displayed (transparent)."))
+        self.thresholdSlider.enabled = False
+        rform.addRow(_("Threshold:"), self.thresholdSlider)
+        self._updatingThreshold = False
+
         self.showOverlayButton = qt.QPushButton(_("Show over T1w"))
         self.showOverlayButton.setToolTip(_("Show the selected result map over the T1w volume again "
                                             "(e.g. after selecting another volume in the Data module)."))
@@ -200,8 +207,9 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.runButton.connect("clicked(bool)", self.onRunButton)
         self.loadButton.connect("clicked(bool)", self.onLoadButton)
         self.resultSelector.connect("currentIndexChanged(int)", self.onResultSelected)
-        self.showOverlayButton.connect("clicked(bool)", self.onShowOverlay)
+        self.showOverlayButton.connect("clicked(bool)", self.onShowOverlayButton)
         self.opacitySlider.connect("valueChanged(double)", self.onOpacityChanged)
+        self.thresholdSlider.connect("valuesChanged(double,double)", self.onThresholdChanged)
 
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
@@ -403,13 +411,17 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except Exception:
             return _("Failed to load results from ") + outFile
         if self.logic.lastLoadedVolumes:
-            # Selecting the first map shows it over the T1w (onShowOverlay)
+            # Select the first map and show it over the whole T1w
             first = self.logic.lastLoadedVolumes[0]
             self.refreshResultList()
-            if self.currentResultNode() is first:
-                self.onShowOverlay()
-            else:
+            self._updatingResultList = True
+            try:
                 self.setCurrentResultNode(first)
+            finally:
+                self._updatingResultList = False
+            self.updateResultToolTip()
+            self.updateThresholdFromNode()
+            self.onShowOverlay(fit=True)
         return summary
 
     # ---------------------------------------------------------- result list
@@ -448,19 +460,52 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onResultSelected(self, index) -> None:
         self.updateResultToolTip()
+        self.updateThresholdFromNode()
         if not self._updatingResultList:
-            self.onShowOverlay()
+            self.onShowOverlay(fit=False)  # only swap the overlay, keep the current views
 
     def updateResultToolTip(self) -> None:
         node = self.currentResultNode()
         self.resultSelector.toolTip = node.GetName() if node else _(
             "BabelBrain result maps loaded in the scene. The selected map is shown over the T1w volume.")
 
-    def onShowOverlay(self, *args) -> None:
+    def onShowOverlayButton(self, *args) -> None:
+        self.onShowOverlay(fit=True)
+
+    def onShowOverlay(self, fit=False) -> None:
         node = self.currentResultNode()
         if node is None:
             return
-        self.logic.showOverlay(node, self.t1Selector.currentNode(), self.opacitySlider.value)
+        self.logic.showOverlay(node, self.t1Selector.currentNode(), self.opacitySlider.value, fit=fit)
+
+    def updateThresholdFromNode(self) -> None:
+        """Range of the threshold slider = range of the selected map; values = its current threshold."""
+        node = self.currentResultNode()
+        display = node.GetDisplayNode() if node else None
+        self.thresholdSlider.enabled = display is not None and node.GetImageData() is not None
+        if not self.thresholdSlider.enabled:
+            return
+        low, high = node.GetImageData().GetScalarRange()
+        span = high - low
+        decimals = 0 if span >= 1000 else 1 if span >= 10 else 3 if span >= 0.01 else 6
+        self._updatingThreshold = True
+        try:
+            self.thresholdSlider.decimals = decimals
+            self.thresholdSlider.singleStep = span / 1000.0 if span > 0 else 1.0
+            self.thresholdSlider.setRange(low, high)
+            if display.GetApplyThreshold():
+                self.thresholdSlider.setValues(max(low, display.GetLowerThreshold()),
+                                               min(high, display.GetUpperThreshold()))
+            else:
+                self.thresholdSlider.setValues(low, high)
+        finally:
+            self._updatingThreshold = False
+
+    def onThresholdChanged(self, low, high) -> None:
+        node = self.currentResultNode()
+        if node is None or self._updatingThreshold:
+            return
+        self.logic.setThreshold(node, low, high)
 
     def onOpacityChanged(self, value) -> None:
         if self.currentResultNode() is not None:
@@ -658,7 +703,23 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
         return "FullElasticSolutionRefocus" if "FullElasticSolutionRefocus" in os.path.basename(path) \
             else "FullElasticSolution"
 
-    def _loadVolume(self, path, folderItem, label="", colormap="Inferno"):
+    @staticmethod
+    def jetColorNode():
+        """Jet color table (not provided by Slicer); created once per scene."""
+        node = slicer.util.getFirstNodeByClassByName("vtkMRMLColorTableNode", "Jet")
+        if node is None:
+            node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLColorTableNode", "Jet")
+            node.SetTypeToUser()
+            n = 256
+            node.SetNumberOfColors(n)
+            node.SetNamesInitialised(True)
+            for i in range(n):
+                x = i / (n - 1.0)
+                r, g, b = (float(np.clip(1.5 - abs(4.0 * x - k), 0.0, 1.0)) for k in (3.0, 2.0, 1.0))
+                node.SetColor(i, "", r, g, b, 1.0)
+        return node
+
+    def _loadVolume(self, path, folderItem, label=""):
         if not path or not os.path.isfile(path):
             logging.warning("BabelBrain: result file not found: %s" % path)
             return None
@@ -673,20 +734,34 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
         node.SetAttribute(ATTR_RESULT_LABEL, label or name)
         node.SetAttribute(ATTR_RESULT_FILE, path)
         display = node.GetDisplayNode()
-        colorNode = slicer.util.getFirstNodeByClassByName("vtkMRMLColorTableNode", colormap)
-        if display and colorNode:
-            display.SetAndObserveColorNodeID(colorNode.GetID())
+        if display:
+            display.SetAndObserveColorNodeID(self.jetColorNode().GetID())
+            # Colormap spans the full range of the map (not Slicer's automatic window/level)
+            low, high = node.GetImageData().GetScalarRange()
+            display.AutoWindowLevelOff()
+            display.SetWindowLevelMinMax(low, high)
         shNode = slicer.mrmlScene.GetSubjectHierarchyNode()
         shNode.SetItemParent(shNode.GetItemByDataNode(node), folderItem)
         return node
 
-    def showOverlay(self, resultVolume, backgroundVolume=None, opacity=0.5) -> None:
-        """Show a result map over the T1w (background kept as is if not given) in all slice views."""
-        # fit=True: showing a (cropped) result alone, e.g. from the Data module, zooms the
-        # views to its small extent; fitting to the T1w shows the whole overlay again
+    def showOverlay(self, resultVolume, backgroundVolume=None, opacity=0.5, fit=False) -> None:
+        """
+        Show a result map over the T1w (background kept as is if not given) in all slice views.
+        fit: also fit the views to the background. Showing a (cropped) result alone, e.g. from
+        the Data module, zooms the views to its small extent; fitting shows the whole T1w again.
+        Without fit, the current zoom/pan of the views is kept.
+        """
         slicer.util.setSliceViewerLayers(
             background=backgroundVolume if backgroundVolume is not None else "keep-current",
-            foreground=resultVolume, foregroundOpacity=opacity, fit=True)
+            foreground=resultVolume, foregroundOpacity=opacity, fit=fit)
+
+    @staticmethod
+    def setThreshold(resultVolume, low, high) -> None:
+        """Values outside [low, high] are transparent in the slice views."""
+        display = resultVolume.GetDisplayNode()
+        if display:
+            display.SetApplyThreshold(True)
+            display.SetThreshold(low, high)
 
     def loadResults(self, outFile, backgroundVolume=None, showFirst=False) -> str:
         """
@@ -728,7 +803,7 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
 
         self.lastLoadedVolumes = volumes
         if volumes and showFirst:
-            self.showOverlay(volumes[0], backgroundVolume)
+            self.showOverlay(volumes[0], backgroundVolume, fit=True)
         if not volumes and not modNodes:
             shNode.RemoveItem(folderItem)
         return _("Loaded %i result image(s) and %i modified trajectory(ies) from %s") \
