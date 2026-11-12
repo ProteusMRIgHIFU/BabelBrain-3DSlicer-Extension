@@ -44,6 +44,13 @@ usual. When BabelBrain is closed, the module reads `~/.BabelBrainSync/BabelBrain
   maps saved with the thermal map) in a subject hierarchy folder
   *BabelBrain results <date>*, and shows the first one over the T1w.
 
+The **Results** section lists the BabelBrain maps in the scene with short names
+(`<targetName>_FullElasticSolution`, `<targetName>_ThermalField`, `<targetName>_PressureField`,
+`<targetName>_IntensityField`, `<targetName>_MI`; `Combined_...` for merged results; hover for the
+full volume name). Selecting one shows it over the
+T1w volume in all slice views, with the chosen opacity. **Show over T1w** re-applies the overlay,
+e.g. after selecting a volume in the Data module (which shows that volume alone).
+
 **Load current results** loads what BabelBrain has reported so far, also while it is still open.
 A copy of the output JSON (`<trajectories>_BabelBrainOutput.json`) and a log of the BabelBrain
 console output (`BabelBrain-Slicer-<date>.log`) are kept in the output directory.

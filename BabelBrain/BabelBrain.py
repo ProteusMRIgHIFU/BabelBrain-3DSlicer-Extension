@@ -24,6 +24,7 @@ EXTENSION_VERSION = "0.1.0"
 ATTR_TARGET_UUID = "BabelBrain.TargetUUID"    # on trajectories sent to BabelBrain
 ATTR_MOD_OF = "BabelBrain.ModifiedFrom"       # on "_mod" trajectories: ID of the original
 ATTR_RESULT_FILE = "BabelBrain.ResultFile"    # on loaded result volumes
+ATTR_RESULT_LABEL = "BabelBrain.ResultLabel"  # short "<targetName>_<map>" label of a result volume
 
 SETTINGS_EXECUTABLE = "BabelBrain/ExecutablePath"
 SETTINGS_LAST_M2M = "BabelBrain/LastM2MPath"
@@ -148,7 +149,47 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.statusLabel.setTextInteractionFlags(qt.Qt.TextSelectableByMouse)
         self.layout.addWidget(self.statusLabel)
 
+        # ---- Results
+        results = ctk.ctkCollapsibleButton()
+        results.text = _("Results")
+        self.layout.addWidget(results)
+        rform = qt.QFormLayout(results)
+
+        # Plain combo box (not a node selector) so that results are listed with a short
+        # "<targetName>_<map>" label instead of the long file-based node name.
+        # Item data: volume node ID.
+        self.resultSelector = qt.QComboBox()
+        rform.addRow(_("Result map:"), self.resultSelector)
+        self._updatingResultList = False
+        self._resultListRefreshPending = False
+
+        self.opacitySlider = ctk.ctkSliderWidget()
+        self.opacitySlider.minimum = 0.0
+        self.opacitySlider.maximum = 1.0
+        self.opacitySlider.singleStep = 0.05
+        self.opacitySlider.decimals = 2
+        self.opacitySlider.value = 0.5
+        self.opacitySlider.setToolTip(_("Opacity of the result map over the T1w volume."))
+        rform.addRow(_("Opacity:"), self.opacitySlider)
+
+        self.showOverlayButton = qt.QPushButton(_("Show over T1w"))
+        self.showOverlayButton.setToolTip(_("Show the selected result map over the T1w volume again "
+                                            "(e.g. after selecting another volume in the Data module)."))
+        rform.addRow(self.showOverlayButton)
+
         self.layout.addStretch(1)
+
+        # Long node names (BabelBrain result files) and paths must not widen the panel:
+        # combo boxes size to a few characters and labels can shrink (their text wraps).
+        for combo in (self.trajectorySelector, self.t1Selector, self.resultSelector):
+            combo.sizeAdjustPolicy = qt.QComboBox.AdjustToMinimumContentsLengthWithIcon
+            combo.setSizePolicy(qt.QSizePolicy.Ignored, qt.QSizePolicy.Fixed)
+        for pathEdit in (self.m2mPathEdit, self.outputPathEdit, self.executableEdit):
+            pathEdit.sizeAdjustPolicy = ctk.ctkPathLineEdit.AdjustToMinimumContentsLength
+            pathEdit.minimumContentsLength = 10
+            pathEdit.setSizePolicy(qt.QSizePolicy.Ignored, qt.QSizePolicy.Fixed)
+        for label in (self.statusLabel, self.executableStatus):
+            label.setSizePolicy(qt.QSizePolicy.Ignored, qt.QSizePolicy.Preferred)
 
         # ---- Connections
         self.trajectorySelector.connect("checkedNodesChanged()", self.updateParameterNodeFromGUI)
@@ -158,9 +199,15 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.executableEdit.connect("currentPathChanged(QString)", self.onExecutableChanged)
         self.runButton.connect("clicked(bool)", self.onRunButton)
         self.loadButton.connect("clicked(bool)", self.onLoadButton)
+        self.resultSelector.connect("currentIndexChanged(int)", self.onResultSelected)
+        self.showOverlayButton.connect("clicked(bool)", self.onShowOverlay)
+        self.opacitySlider.connect("valueChanged(double)", self.onOpacityChanged)
 
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
+        for event in (slicer.mrmlScene.NodeAddedEvent, slicer.mrmlScene.NodeRemovedEvent,
+                      slicer.mrmlScene.EndImportEvent, slicer.mrmlScene.EndCloseEvent):
+            self.addObserver(slicer.mrmlScene, event, self.scheduleResultListRefresh)
 
         settings = qt.QSettings()
         self.executableEdit.currentPath = settings.value(SETTINGS_EXECUTABLE, "")
@@ -171,6 +218,7 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._pollTimer.connect("timeout()", self.onPoll)
 
         self.initializeParameterNode()
+        self.refreshResultList()  # results already in the scene (e.g. a saved scene)
 
     def cleanup(self) -> None:
         self.removeObservers()
@@ -294,6 +342,7 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def setStatus(self, text) -> None:
         self.statusLabel.setProperty("isHint", False)
         self.statusLabel.text = text
+        self.statusLabel.toolTip = text
         logging.info("BabelBrain: " + text)
 
     # -------------------------------------------------------------- actions
@@ -350,10 +399,72 @@ class BabelBrainWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def loadResults(self, outFile) -> str:
         try:
             with slicer.util.tryWithErrorDisplay(_("Failed to load BabelBrain results."), waitCursor=True):
-                summary = self.logic.loadResults(outFile, self.t1Selector.currentNode())
+                summary = self.logic.loadResults(outFile)
         except Exception:
             return _("Failed to load results from ") + outFile
+        if self.logic.lastLoadedVolumes:
+            # Selecting the first map shows it over the T1w (onShowOverlay)
+            first = self.logic.lastLoadedVolumes[0]
+            self.refreshResultList()
+            if self.currentResultNode() is first:
+                self.onShowOverlay()
+            else:
+                self.setCurrentResultNode(first)
         return summary
+
+    # ---------------------------------------------------------- result list
+    def scheduleResultListRefresh(self, *args) -> None:
+        # Attributes of a new node are set after NodeAddedEvent: refresh once control returns
+        # to the event loop (also coalesces the many events of a scene import).
+        if not self._resultListRefreshPending:
+            self._resultListRefreshPending = True
+            qt.QTimer.singleShot(0, self.refreshResultList)
+
+    def refreshResultList(self) -> None:
+        self._resultListRefreshPending = False
+        currentID = self.resultSelector.currentData
+        nodes = [n for n in slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+                 if n.GetAttribute(ATTR_RESULT_FILE)]
+        self._updatingResultList = True
+        try:
+            self.resultSelector.clear()
+            for node in nodes:
+                self.resultSelector.addItem(node.GetAttribute(ATTR_RESULT_LABEL) or node.GetName(), node.GetID())
+                self.resultSelector.setItemData(self.resultSelector.count - 1, node.GetName(), qt.Qt.ToolTipRole)
+            index = self.resultSelector.findData(currentID) if currentID else -1
+            self.resultSelector.setCurrentIndex(max(index, 0) if nodes else -1)
+        finally:
+            self._updatingResultList = False
+        self.updateResultToolTip()
+
+    def currentResultNode(self):
+        nodeID = self.resultSelector.currentData
+        return slicer.mrmlScene.GetNodeByID(nodeID) if nodeID else None
+
+    def setCurrentResultNode(self, node) -> None:
+        index = self.resultSelector.findData(node.GetID()) if node else -1
+        if index >= 0:
+            self.resultSelector.setCurrentIndex(index)
+
+    def onResultSelected(self, index) -> None:
+        self.updateResultToolTip()
+        if not self._updatingResultList:
+            self.onShowOverlay()
+
+    def updateResultToolTip(self) -> None:
+        node = self.currentResultNode()
+        self.resultSelector.toolTip = node.GetName() if node else _(
+            "BabelBrain result maps loaded in the scene. The selected map is shown over the T1w volume.")
+
+    def onShowOverlay(self, *args) -> None:
+        node = self.currentResultNode()
+        if node is None:
+            return
+        self.logic.showOverlay(node, self.t1Selector.currentNode(), self.opacitySlider.value)
+
+    def onOpacityChanged(self, value) -> None:
+        if self.currentResultNode() is not None:
+            slicer.util.setSliceViewerLayers(foregroundOpacity=value)
 
 
 #
@@ -370,6 +481,7 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
         self._logHandle = None
         self.outputPath = ""
         self.targetNames = []
+        self.lastLoadedVolumes = []
 
     # ---------------------------------------------------------------- input
     def prepareT1w(self, volumeNode, outputPath):
@@ -535,7 +647,18 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
         shNode.SetItemParent(shNode.GetItemByDataNode(modNode), folderItem)
         return modNode
 
-    def _loadVolume(self, path, folderItem, colormap="Inferno"):
+    @staticmethod
+    def resultLabel(targetName, mapType):
+        """Short label of a result map, e.g. "Target1_FullElasticSolution"."""
+        return "%s_%s" % (targetName, mapType)
+
+    @staticmethod
+    def acousticMapType(path):
+        # phased arrays report the refocused solution
+        return "FullElasticSolutionRefocus" if "FullElasticSolutionRefocus" in os.path.basename(path) \
+            else "FullElasticSolution"
+
+    def _loadVolume(self, path, folderItem, label="", colormap="Inferno"):
         if not path or not os.path.isfile(path):
             logging.warning("BabelBrain: result file not found: %s" % path)
             return None
@@ -547,6 +670,7 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
             if name.endswith(ext):
                 name = name[: -len(ext)]
         node = slicer.util.loadVolume(path, {"name": name, "show": False})
+        node.SetAttribute(ATTR_RESULT_LABEL, label or name)
         node.SetAttribute(ATTR_RESULT_FILE, path)
         display = node.GetDisplayNode()
         colorNode = slicer.util.getFirstNodeByClassByName("vtkMRMLColorTableNode", colormap)
@@ -556,8 +680,20 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
         shNode.SetItemParent(shNode.GetItemByDataNode(node), folderItem)
         return node
 
-    def loadResults(self, outFile, backgroundVolume=None) -> str:
-        """Create/update "_mod" trajectories and load all result images. Returns a summary."""
+    def showOverlay(self, resultVolume, backgroundVolume=None, opacity=0.5) -> None:
+        """Show a result map over the T1w (background kept as is if not given) in all slice views."""
+        # fit=True: showing a (cropped) result alone, e.g. from the Data module, zooms the
+        # views to its small extent; fitting to the T1w shows the whole overlay again
+        slicer.util.setSliceViewerLayers(
+            background=backgroundVolume if backgroundVolume is not None else "keep-current",
+            foreground=resultVolume, foregroundOpacity=opacity, fit=True)
+
+    def loadResults(self, outFile, backgroundVolume=None, showFirst=False) -> str:
+        """
+        Create/update "_mod" trajectories and load all result images. Returns a summary.
+        The loaded volumes are kept in self.lastLoadedVolumes; with showFirst, the
+        first one is shown over backgroundVolume.
+        """
         results = SP.ReadOutput(outFile)
         shNode = slicer.mrmlScene.GetSubjectHierarchyNode()
         folderItem = shNode.CreateFolderItem(
@@ -572,7 +708,13 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
         volumes = []
         for key in ("acoustic", "acousticCombined", "thermal", "thermalCombined"):
             for entry in results[key]:
-                node = self._loadVolume(entry["image"], folderItem)
+                # Combined (merged) results have no single target name
+                targetName = entry.get("name") or _("Combined")
+                if key.startswith("acoustic"):
+                    mapType = self.acousticMapType(entry["image"])
+                else:
+                    mapType = "ThermalField"
+                node = self._loadVolume(entry["image"], folderItem, self.resultLabel(targetName, mapType))
                 if node is not None:
                     volumes.append(node)
                     # Thermal maps come with pressure/intensity/MI maps
@@ -580,13 +722,13 @@ class BabelBrainLogic(ScriptedLoadableModuleLogic):
                         for extra in ("PressureField", "IntensityField", "MI"):
                             extraPath = entry["image"].replace("ThermalField", extra)
                             if os.path.isfile(extraPath):
-                                n = self._loadVolume(extraPath, folderItem)
+                                n = self._loadVolume(extraPath, folderItem, self.resultLabel(targetName, extra))
                                 if n is not None:
                                     volumes.append(n)
 
-        if volumes and slicer.app.layoutManager() is not None:
-            slicer.util.setSliceViewerLayers(background=backgroundVolume, foreground=volumes[0],
-                                             foregroundOpacity=0.5)
+        self.lastLoadedVolumes = volumes
+        if volumes and showFirst:
+            self.showOverlay(volumes[0], backgroundVolume)
         if not volumes and not modNodes:
             shNode.RemoveItem(folderItem)
         return _("Loaded %i result image(s) and %i modified trajectory(ies) from %s") \
@@ -733,6 +875,11 @@ class BabelBrainTest(ScriptedLoadableModuleTest):
                 mm = vtk.vtkMatrix4x4()
                 mods[0].GetMatrixTransformToParent(mm)
                 np.testing.assert_allclose(slicer.util.arrayFromVTKMatrix(mm), expected, atol=1e-6)
+
+            labels = sorted(n.GetAttribute(ATTR_RESULT_LABEL) for n in slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+                            if n.GetAttribute(ATTR_RESULT_FILE))
+            self.assertEqual(labels, ["Combined_FullElasticSolution", "Target_1_FullElasticSolution",
+                                      "Target_2_FullElasticSolution"])
 
             # Loading again updates the existing "_mod" nodes and replaces the volumes
             logic.loadResults(logic.findOutputFile(), t1)
