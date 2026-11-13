@@ -218,3 +218,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+BabelBrain/.DS_Store
+.DS_Store
