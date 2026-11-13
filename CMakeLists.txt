@@ -5,7 +5,7 @@ project(BabelBrain)
 #-----------------------------------------------------------------------------
 # Extension meta-information
 set(EXTENSION_HOMEPAGE "https://github.com/ProteusMRIgHIFU/SlicerBabelBrain#readme")
-set(EXTENSION_CATEGORY "Focused Ultrasound")
+set(EXTENSION_CATEGORY "Ultrasound")
 set(EXTENSION_CONTRIBUTORS "Samuel Pichardo (University of Calgary)")
 set(EXTENSION_DESCRIPTION "Run BabelBrain transcranial focused ultrasound simulations for trajectories planned in 3D Slicer and load the results back. Requires a separate installation of BabelBrain 0.8.8 or newer (free, open source: https://github.com/ProteusMRIgHIFU/BabelBrain/releases).")
 set(EXTENSION_ICONURL "https://raw.githubusercontent.com/ProteusMRIgHIFU/SlicerBabelBrain/main/BabelBrain.png")

@@ -124,3 +124,21 @@ import BabelBrain; BabelBrain.BabelBrainTest().runTest()
 - `BabelBrain/BabelBrain.py`: the Slicer module (GUI, logic, tests).
 - `BabelBrain/BabelBrainLib/SyncProtocol.py`: the JSON protocol, pose conversion, NIfTI header
   reading and executable lookup; no Slicer dependency (mirrors `BabelBrain/BrainsightSync.py`).
+
+## Citation
+
+If you use this extension, please cite BabelBrain:
+
+Pichardo S. BabelBrain: An Open-Source Application for Prospective Modeling of Transcranial Focused
+Ultrasound for Neuromodulation Applications. *IEEE Trans Ultrason Ferroelectr Freq Control*.
+2023;70(7):587-599. doi: [10.1109/TUFFC.2023.3274046](https://doi.org/10.1109/TUFFC.2023.3274046).
+PMID: [37155375](https://pubmed.ncbi.nlm.nih.gov/37155375/).
+
+## Disclaimer
+
+This extension and BabelBrain are intended exclusively for research purposes and are not
+approved for clinical use.
+
+## License
+
+BSD 3-Clause License. See [LICENSE](LICENSE).
