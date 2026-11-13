@@ -48,7 +48,9 @@ Run <a href="https://github.com/ProteusMRIgHIFU/BabelBrain">BabelBrain</a> trans
 simulations for one or more trajectories (linear transforms) planned in 3D Slicer.<br>
 BabelBrain is started in the same mode used by Brainsight; the acoustic and thermal maps and the
 corrected ("_mod") trajectories are loaded back into the scene when BabelBrain is closed.<br>
-See the <a href="https://github.com/ProteusMRIgHIFU/BabelBrain-3DSlicer-Extension">extension documentation</a>.
+<b>Requires BabelBrain 0.8.8 or newer</b>, installed separately (free, open source):
+<a href="https://github.com/ProteusMRIgHIFU/BabelBrain/releases">BabelBrain releases</a>.<br>
+See the <a href="https://github.com/ProteusMRIgHIFU/SlicerBabelBrain#readme">extension documentation</a>.
 """)
         self.parent.acknowledgementText = _("""
 BabelBrain is developed at the University of Calgary (Proteus MRIgHIFU lab).

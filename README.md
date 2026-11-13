@@ -1,22 +1,43 @@
-# BabelBrain-3DSlicer-Extension
+# SlicerBabelBrain
 
 3D Slicer extension to run [BabelBrain](https://github.com/ProteusMRIgHIFU/BabelBrain)
 transcranial focused ultrasound simulations for trajectories planned in 3D Slicer,
 and to load the results back into the scene.
 
-It talks to BabelBrain exactly as Brainsight 2.6 does: BabelBrain is started with
-`-bInUseWithBrainsight` and the inputs/results are exchanged through JSON files in
-`~/.BabelBrainSync`. No changes to BabelBrain are needed (requires **BabelBrain 0.8.8**
-or newer, the first version supporting the JSON protocol).
+![BabelBrain module in 3D Slicer](Screenshot.png)
 
-## Installation (until it is in the Extensions Manager)
+## Requirements
+
+> [!IMPORTANT]
+> This extension does **not** include the simulation engine. It requires a separate
+> installation of **BabelBrain 0.8.8 or newer** (the first version supporting the JSON
+> exchange protocol used by this extension). BabelBrain is free and open source (BSD-3).
+>
+> - Installers for macOS and Windows: <https://github.com/ProteusMRIgHIFU/BabelBrain/releases>
+> - Documentation and installation from source (Linux): <https://proteusmrighifu.github.io/BabelBrain/>
+>
+> BabelBrain needs a supported GPU (CUDA, OpenCL, Metal or MLX) and
+> [SimNIBS](https://simnibs.github.io/simnibs/) `charm` segmentation outputs (m2m directory)
+> of the subject.
+
+The extension talks to BabelBrain exactly as Brainsight 2.6 does: BabelBrain is started with
+`-bInUseWithBrainsight` and the inputs/results are exchanged through JSON files in
+`~/.BabelBrainSync`. No changes to BabelBrain are needed.
+
+## Installation
+
+1. Install BabelBrain (see [Requirements](#requirements)).
+2. In 3D Slicer, open the *Extensions Manager*, search for **BabelBrain**, install it and
+   restart Slicer.
+3. The module appears under *Modules → Focused Ultrasound → BabelBrain*.
+
+### For developers (from source)
 
 1. Clone this repository.
 2. In Slicer: *Edit → Application Settings → Modules → Additional module paths*, add
    `<this repository>/BabelBrain`, and restart Slicer.
    (Alternatively, drag and drop the `BabelBrain` folder onto the Slicer window and
    choose *Add Python scripted modules to the application*.)
-3. The module appears under *Modules → Focused Ultrasound → BabelBrain*.
 
 ## Usage
 
